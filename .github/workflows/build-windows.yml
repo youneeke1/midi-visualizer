@@ -1,0 +1,30 @@
+name: Build MIDI Visualizer (Windows)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build executable
+        run: pyinstaller --noconfirm --clean --windowed --name MIDIVisualizer --collect-all PySide6 --collect-all imageio_ffmpeg main.py
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIDIVisualizer-Windows
+          path: dist/MIDIVisualizer/
+          if-no-files-found: error
