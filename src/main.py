@@ -12,47 +12,113 @@ PALETTE=["#a970ff","#54c8ff","#ff6b82","#69d69a","#ffd166","#ff9f43","#d78bff","
 
 class Preview(QWidget):
     def __init__(self):
-        super().__init__(); self.setMinimumSize(300,520); self.setMaximumSize(430,740)
-        self.tracks=[]; self.bpm=120; self.mode="MIDI GRID"; self.position=0; self.duration=1; self.wave=np.array([],dtype=np.float32)
-    def paintEvent(self,event):
-        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing); r=self.rect(); p.fillRect(r,QColor("#09090e"))
+        super().__init__()
+        self.setMinimumSize(300, 520)
+        self.setMaximumSize(430, 740)
+        self.tracks = []
+        self.bpm = 120
+        self.mode = "MIDI GRID"
+        self.position = 0
+        self.duration = 1
+        self.samples = np.array([], dtype=np.float32)
+        self.sr = 11025
+        self.glow = 0.7
+        self.zoom = 1.0
+        self.smoothed_bands = np.zeros(64, dtype=np.float32)
+
+    def audio_bands(self, count=64):
+        if self.samples.size == 0:
+            return np.zeros(count, dtype=np.float32)
+        size = 4096
+        center = int(self.position * self.sr)
+        start = max(0, center - size // 2)
+        chunk = self.samples[start:start + size]
+        if len(chunk) < size:
+            chunk = np.pad(chunk, (0, size - len(chunk)))
+        spectrum = np.abs(np.fft.rfft(chunk * np.hanning(size))).astype(np.float32)
+        spectrum = spectrum[2: min(len(spectrum), 1400)]
+        groups = np.array_split(spectrum, count)
+        values = np.array([float(np.sqrt(np.mean(g * g))) if len(g) else 0.0 for g in groups], dtype=np.float32)
+        peak = max(float(np.percentile(values, 90)), 1e-5)
+        values = np.clip(values / peak, 0, 1)
+        values = np.sqrt(values)
+        self.smoothed_bands = self.smoothed_bands * 0.68 + values * 0.32
+        return self.smoothed_bands
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        p.fillRect(r, QColor("#09090e"))
         p.setPen(QPen(QColor("#201d29")))
-        for x in range(0,r.width(),28): p.drawLine(x,0,x,r.height())
-        for y in range(0,r.height(),28): p.drawLine(0,y,r.width(),y)
-        p.setPen(QColor("#e9e4f2")); p.setFont(QFont("Segoe UI",10,QFont.Bold)); p.drawText(12,28,"MIDI VISUALIZER")
-        p.setPen(QColor("#817c8d")); p.setFont(QFont("Segoe UI",8)); p.drawText(12,47,f"{self.bpm} BPM   ·   {self.mode}")
-        top,bottom=85,r.height()-105; left,right=16,r.width()-16; span=8; start=max(0,self.position-1.6)
-        enabled=[t for t in self.tracks if t.enabled]
-        if self.mode=="MIDI GRID":
-            for pitch in range(36,97,12):
-                y=bottom-(pitch-36)/60*(bottom-top); p.setPen(QPen(QColor("#292533"))); p.drawLine(left,int(y),right,int(y))
+        for x in range(0, r.width(), 28):
+            p.drawLine(x, 0, x, r.height())
+        for y in range(0, r.height(), 28):
+            p.drawLine(0, y, r.width(), y)
+        p.setPen(QColor("#e9e4f2"))
+        p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        p.drawText(12, 28, "MIDI VISUALIZER")
+        p.setPen(QColor("#817c8d"))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(12, 47, f"{self.bpm} BPM   ·   {self.mode}")
+
+        top, bottom = 85, r.height() - 105
+        left, right = 16, r.width() - 16
+        span = 8 / max(0.35, self.zoom)
+        start = max(0.0, self.position - span * 0.2)
+        enabled = [t for t in self.tracks if t.enabled]
+
+        if self.mode == "MIDI GRID":
+            for pitch in range(36, 97, 12):
+                y = bottom - (pitch - 36) / 60 * (bottom - top)
+                p.setPen(QPen(QColor("#292533")))
+                p.drawLine(left, int(y), right, int(y))
             for t in enabled:
-                c=QColor(t.color)
+                c = QColor(t.color)
                 for n in t.notes:
-                    if n.end<start or n.start>start+span: continue
-                    x=left+(n.start-start)/span*(right-left); ex=left+(n.end-start)/span*(right-left); y=bottom-(n.pitch-36)/60*(bottom-top)
-                    p.setPen(Qt.NoPen); p.setBrush(c if n.start<=self.position<n.end else QColor(c.red(),c.green(),c.blue(),145))
-                    p.drawRoundedRect(int(x),int(y-4),max(3,int(ex-x)),8,4,4)
-        elif self.mode=="WAVEFORM":
-            for i,t in enumerate(enabled):
-                mid=top+(i+.5)*(bottom-top)/max(1,len(enabled)); p.setPen(QPen(QColor(t.color),2))
-                for x in range(left,right,3):
-                    idx=int((start+(x-left)/(right-left)*span)*len(self.wave)/max(.01,self.duration))
-                    amp=float(self.wave[idx]) if 0<=idx<len(self.wave) else 0
-                    p.drawLine(x,int(mid-amp*30),x,int(mid+amp*30))
-        else:
-            import math
-            for t in enabled:
-                p.setPen(Qt.NoPen); p.setBrush(QColor(t.color))
-                for n in t.notes:
-                    age=self.position-n.start
-                    if 0<=age<2:
-                        y=bottom-(n.pitch-36)/60*(bottom-top)
-                        for k in range(12):
-                            x=left+int((n.start*43+k*29+age*70)%(right-left)); yy=int(y+math.sin(k*.7+age*3)*35)
-                            p.drawEllipse(x,yy,4,4)
-        px=left+int(.2*(right-left)); p.setPen(QPen(QColor("#f3eaff"),2)); p.drawLine(px,top,px,bottom)
-        p.setPen(QColor("#9b8cae")); p.setFont(QFont("Segoe UI",8)); p.drawText(12,r.height()-18,"AUDIO WAVEFORM  ·  9:16")
+                    if n.end < start or n.start > start + span:
+                        continue
+                    x = left + (n.start - start) / span * (right - left)
+                    ex = left + (n.end - start) / span * (right - left)
+                    y = bottom - (n.pitch - 36) / 60 * (bottom - top)
+                    active = n.start <= self.position < n.end
+                    p.setPen(Qt.NoPen)
+                    if active and self.glow > 0:
+                        p.setBrush(QColor(c.red(), c.green(), c.blue(), int(30 + 65 * self.glow)))
+                        p.drawRoundedRect(int(x - 3), int(y - 9), max(8, int(ex - x) + 6), 18, 8, 8)
+                    p.setBrush(c if active else QColor(c.red(), c.green(), c.blue(), 145))
+                    p.drawRoundedRect(int(x), int(y - 4), max(3, int(ex - x)), 8, 4, 4)
+
+        elif self.mode == "WAVEFORM":
+            bands = self.audio_bands(64)
+            lane_h = (bottom - top) / max(1, len(enabled))
+            for lane, t in enumerate(enabled):
+                mid = top + (lane + 0.5) * lane_h
+                c = QColor(t.color)
+                p.setPen(QPen(QColor("#25212d"), 1))
+                p.drawLine(left, int(mid), right, int(mid))
+                bar_step = (right - left) / len(bands)
+                bar_w = max(2, int(bar_step * 0.56))
+                for i, value in enumerate(bands):
+                    x = left + (i + 0.5) * bar_step
+                    height = max(2, int(value * lane_h * 0.43))
+                    if self.glow > 0:
+                        p.setPen(QPen(QColor(c.red(), c.green(), c.blue(), int(35 * self.glow)), bar_w + 5))
+                        p.drawLine(int(x), int(mid - height), int(x), int(mid + height))
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(c)
+                    p.drawRoundedRect(int(x - bar_w / 2), int(mid - height), bar_w, height * 2, 3, 3)
+                p.setPen(QColor(t.color))
+                p.setFont(QFont("Segoe UI", 7))
+                p.drawText(left + 2, int(top + lane * lane_h + 13), t.name[:18])
+
+        # The playhead follows the same time-to-pixel mapping as the MIDI notes.
+        play_x = left + max(0.0, min(1.0, (self.position - start) / span)) * (right - left)
+        p.setPen(QPen(QColor("#f3eaff"), 2))
+        p.drawLine(int(play_x), top, int(play_x), bottom)
+        p.setPen(QColor("#9b8cae"))
+        p.setFont(QFont("Segoe UI", 8))
+        p.drawText(12, r.height() - 18, "AUDIO REACTIVE  ·  9:16")
 
 class ExportThread(QThread):
     progress=Signal(int); done=Signal(str); failed=Signal(str)
@@ -84,9 +150,9 @@ class MainWindow(QMainWindow):
         row=QHBoxLayout(); self.add_btn=QPushButton("Add MIDI"); self.add_btn.clicked.connect(self.add_midi); row.addWidget(self.add_btn)
         rem=QPushButton("Remove"); rem.clicked.connect(self.remove_track); row.addWidget(rem); l.addLayout(row)
         l.addWidget(self.label("TRACK OFFSET (SECONDS)")); self.offset=QDoubleSpinBox(); self.offset.setRange(-600,600); self.offset.setDecimals(3); self.offset.setSingleStep(.01); self.offset.valueChanged.connect(self.change_offset); l.addWidget(self.offset)
-        l.addWidget(self.label("VISUAL MODE")); self.mode_box=QComboBox(); self.mode_box.addItems(["MIDI GRID","WAVEFORM","PARTICLES / FLOW"]); self.mode_box.currentTextChanged.connect(self.change_mode); l.addWidget(self.mode_box)
-        self.glow=QSlider(Qt.Horizontal); self.glow.setRange(0,100); self.glow.setValue(70); l.addWidget(QLabel("Glow intensity")); l.addWidget(self.glow)
-        self.zoom=QSlider(Qt.Horizontal); self.zoom.setRange(35,200); self.zoom.setValue(100); l.addWidget(QLabel("Timeline zoom")); l.addWidget(self.zoom)
+        l.addWidget(self.label("VISUAL MODE")); self.mode_box=QComboBox(); self.mode_box.addItems(["MIDI GRID","WAVEFORM"]); self.mode_box.currentTextChanged.connect(self.change_mode); l.addWidget(self.mode_box)
+        self.glow=QSlider(Qt.Horizontal); self.glow.setRange(0,100); self.glow.setValue(70); self.glow.valueChanged.connect(self.update_visual_settings); l.addWidget(QLabel("Glow intensity")); l.addWidget(self.glow)
+        self.zoom=QSlider(Qt.Horizontal); self.zoom.setRange(35,200); self.zoom.setValue(100); self.zoom.valueChanged.connect(self.update_visual_settings); l.addWidget(QLabel("Timeline zoom")); l.addWidget(self.zoom)
         self.wave_check=QCheckBox("Show audio waveform"); self.wave_check.setChecked(True); l.addWidget(self.wave_check); split.addWidget(left)
         right=QFrame(); right.setObjectName("panel"); rr=QVBoxLayout(right); top=QHBoxLayout(); top.addWidget(self.label("LIVE PREVIEW")); top.addStretch()
         self.status=QLabel("READY"); self.status.setObjectName("pill"); top.addWidget(self.status); rr.addLayout(top)
@@ -98,17 +164,17 @@ class MainWindow(QMainWindow):
         self.fps=QComboBox(); self.fps.addItems(["30 FPS","60 FPS"]); self.fps.setCurrentIndex(1); exp.addWidget(self.fps)
         self.export=QPushButton("Export MP4"); self.export.clicked.connect(self.export_video); exp.addWidget(self.export); rr.addLayout(exp)
         self.progress=QProgressBar(); self.progress.setVisible(False); rr.addWidget(self.progress); split.addWidget(right); split.setSizes([340,1000])
-        self.setStatusBar(QStatusBar()); self.setStatusBar(QStatusBar()); self.statusBar().showMessage("Load an audio file and MIDI files to begin.")
+        self.setStatusBar(QStatusBar()); self.statusBar().showMessage("Load an audio file and MIDI files to begin.")
     def theme(self):
         self.setStyleSheet("""QMainWindow,QWidget{background:#101014;color:#eeeaf4;font-family:Segoe UI;font-size:10pt} QFrame#panel{background:#18181f;border:1px solid #292933;border-radius:14px} QPushButton{background:#292733;border:1px solid #3a3745;border-radius:8px;padding:9px 13px;color:#f1edf8} QPushButton:hover{background:#383344;border-color:#8060ad} QSpinBox,QDoubleSpinBox,QComboBox{background:#22212a;border:1px solid #393744;border-radius:7px;padding:7px} QListWidget{background:transparent;border:0} QListWidget::item{background:#22212a;border:1px solid #32313d;border-radius:8px;padding:7px} QLabel#muted{color:#777786;font-size:9pt} QLabel#pill{color:#c8a8ff;background:#30243e;border:1px solid #533b70;padding:6px 12px;border-radius:9px} QProgressBar{background:#25232d;border:0;border-radius:4px;height:8px} QProgressBar::chunk{background:#a970ff;border-radius:4px}""")
     def load_audio(self):
         path,_=QFileDialog.getOpenFileName(self,"Load audio","","Audio (*.wav *.mp3 *.flac *.ogg *.m4a)")
         if not path:return
         try:
-            self.audio=path; self.duration=audio_duration(path); samples,sr=decode_audio(path,4000); block=max(1,int(sr*.02))
+            self.audio=path; self.duration=audio_duration(path); samples,sr=decode_audio(path,11025); block=max(1,int(sr*.02))
             self.wave=np.array([np.max(np.abs(samples[i:i+block])) for i in range(0,len(samples),block)],dtype=np.float32)
             self.audio_label.setText(Path(path).name); self.audio_btn.setText("♪ "+Path(path).name[:20])
-            self.player.setSource(QUrl.fromLocalFile(path)); self.preview.wave=self.wave; self.preview.duration=self.duration; self.refresh_state()
+            self.player.setSource(QUrl.fromLocalFile(path)); self.preview.samples=samples; self.preview.sr=sr; self.preview.duration=self.duration; self.preview.smoothed_bands=np.zeros(64,dtype=np.float32); self.refresh_state()
         except Exception as e: QMessageBox.critical(self,"Audio error",str(e))
     def add_midi(self):
         paths,_=QFileDialog.getOpenFileNames(self,"Add MIDI files","","MIDI (*.mid *.midi)")
