@@ -210,7 +210,12 @@ class MainWindow(QMainWindow):
         for t in self.tracks:t.load(v)
         self.refresh_slots();self.refresh_state()
     def change_mode(self,m): self.mode=m; self.refresh_state()
+    def update_visual_settings(self,*args):
+        self.preview.glow=self.glow.value()/100
+        self.preview.zoom=self.zoom.value()/100
+        self.preview.update()
     def refresh_state(self):
+        self.preview.glow=self.glow.value()/100; self.preview.zoom=self.zoom.value()/100
         self.preview.tracks=self.tracks;self.preview.bpm=self.bpm.value();self.preview.mode=self.mode;self.preview.update()
         self.export.setEnabled(bool(self.audio and self.tracks));self.play.setEnabled(bool(self.audio));self.seek.setEnabled(bool(self.audio))
     def toggle_play(self):
