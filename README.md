@@ -7,9 +7,9 @@ Windows desktop app for multi-track MIDI + audio visualisation.
 - MIDI note parsing (pitch, velocity, duration and tempo)
 - Project BPM scaling for MIDI timing
 - Audio import: WAV, MP3, FLAC, OGG and M4A
-- Three visual modes: MIDI GRID, WAVEFORM, PARTICLES / FLOW
+- Two visual modes: MIDI GRID and smooth audio-reactive WAVEFORM bars
 - Portrait 9:16 preview and offline MP4 export at 1080x1920, 30 or 60 FPS
-- Dark interface, glow, timeline zoom and optional audio waveform
+- Dark interface, working glow intensity and timeline zoom controls; smooth waveform bars react to the playing audio
 - Windows EXE build through GitHub Actions
 
 ## Run on Windows 10/11
