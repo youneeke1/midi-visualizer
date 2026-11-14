@@ -19,6 +19,20 @@ class VideoRenderer:
         self.duration = len(self.samples)/self.sr if len(self.samples) else 0
         self.notes = [(t,n) for t in tracks if t.enabled for n in t.notes]
 
+    def audio_bands(self, sec, count=96):
+        size = 4096
+        center = int(sec * self.sr)
+        start = max(0, center - size // 2)
+        chunk = self.samples[start:start + size]
+        if len(chunk) < size:
+            chunk = np.pad(chunk, (0, size - len(chunk)))
+        spectrum = np.abs(np.fft.rfft(chunk * np.hanning(size))).astype(np.float32)
+        spectrum = spectrum[2:min(len(spectrum), 1800)]
+        groups = np.array_split(spectrum, count)
+        values = np.array([float(np.sqrt(np.mean(g*g))) if len(g) else 0.0 for g in groups], dtype=np.float32)
+        peak = max(float(np.percentile(values, 90)), 1e-5)
+        return np.sqrt(np.clip(values / peak, 0, 1))
+
     def frame(self, sec):
         w,h=self.width,self.height
         im=Image.new("RGB",(w,h),"#09090e"); d=ImageDraw.Draw(im,"RGBA")
@@ -36,26 +50,28 @@ class VideoRenderer:
                 if n.end<left or n.start>right: continue
                 nx=x0+(n.start-left)/span*(x1-x0); ex=x0+(n.end-left)/span*(x1-x0)
                 yy=bottom-(n.pitch-36)/60*(bottom-top); active=n.start<=sec<n.end
+                if active and self.glow>0:
+                    alpha=int(35+75*self.glow)
+                    d.rounded_rectangle((nx-5,yy-15,max(nx+8,ex+5),yy+16),radius=12,fill=tuple(bytes.fromhex(track.color.lstrip("#")))+(alpha,))
                 d.rounded_rectangle((nx,yy-9,max(nx+5,ex),yy+10),radius=8,fill=track.color+("ff" if active else "9a"))
-                if active and self.glow>0: d.ellipse((nx-8,yy-16,nx+18,yy+16),fill=track.color+"35")
         elif self.mode=="WAVEFORM":
-            enabled=[t for t in self.tracks if t.enabled]; band=(bottom-top)/max(1,len(enabled))
+            enabled=[t for t in self.tracks if t.enabled]
+            bands=self.audio_bands(sec,96)
+            lane=(bottom-top)/max(1,len(enabled))
             for i,t in enumerate(enabled):
-                mid=top+(i+.5)*band; d.text((x0,mid-band/2+4),t.name[:22],font=font(17),fill=t.color)
-                for xx in range(x0,x1,3):
-                    tm=left+(xx-x0)/(x1-x0)*span; idx=int(tm*self.sr)
-                    amp=float(np.max(np.abs(self.samples[idx:idx+max(1,int(self.sr*.025))]))) if 0<=idx<len(self.samples) else 0
-                    env=8+amp*band*.34; d.line((xx,mid-env,xx,mid+env),fill=t.color,width=2)
-        else:
-            for track,n in self.notes:
-                age=sec-n.start
-                if age<0 or age>max(1.8,n.end-n.start): continue
-                py=bottom-(n.pitch-36)/60*(bottom-top); strength=n.velocity/127
-                for k in range(26):
-                    phase=k*.71+age*2.3+n.pitch*.13
-                    px=x0+((n.start*71+k*37+age*105)%(x1-x0)); yy=py+math.sin(phase)*(28+80*strength); rad=2+4*strength
-                    d.ellipse((px-rad,yy-rad,px+rad,yy+rad),fill=track.color+"bb")
-        play_x=x0+.20*(x1-x0); d.line((play_x,top-30,play_x,bottom+25),fill=(245,239,255,210),width=3)
+                mid=top+(i+.5)*lane
+                d.text((x0,top+i*lane+8),t.name[:22],font=font(17),fill=t.color)
+                step=(x1-x0)/len(bands); bar_w=max(3,int(step*.58))
+                rgb=tuple(bytes.fromhex(t.color.lstrip("#")))
+                for j,value in enumerate(bands):
+                    xx=x0+(j+.5)*step
+                    amp=max(3,int(value*lane*.42))
+                    if self.glow>0:
+                        d.line((xx,mid-amp,xx,mid+amp),fill=rgb+(int(35*self.glow),),width=bar_w+10)
+                    d.rounded_rectangle((xx-bar_w/2,mid-amp,xx+bar_w/2,mid+amp),radius=4,fill=t.color)
+        # Match the note timeline mapping: at t=0 the playhead is at the first pixel.
+        play_x=x0+max(0.0,min(1.0,(sec-left)/span))*(x1-x0)
+        d.line((play_x,top-30,play_x,bottom+25),fill=(245,239,255,220),width=3)
         if self.waveform:
             wy=h-260; d.text((x0,wy-58),"AUDIO",font=font(18,True),fill="#8b829e"); pts=[]
             for xx in range(x0,x1,3):
